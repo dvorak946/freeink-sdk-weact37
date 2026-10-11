@@ -1094,11 +1094,16 @@ constexpr BoardProfile MURPHY_M3 = {
     // rotated 90°, and the Murphy driver rotates each plane into controller RAM.
     416,
     240,
-    {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
+    // Pin layar UC8253:
+    // SCK=12, MOSI=11, CS=10, DC=17, RST=16, BUSY=4
+    {12, 11, 10, 17, 16, 4, PIN_UNASSIGNED},
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
-    {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
-    {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
-    9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
+    // Pin microSD melalui SPI:
+    // SCK=12, MISO=13, MOSI=11, CS=9
+    // false = microSD berbagi bus SPI dengan layar.
+    {12, 13, 11, 9, PIN_UNASSIGNED, false, 0},
+    {38, 39, PIN_UNASSIGNED, PIN_UNASSIGNED, 2, 1, 21, false},
+    PIN_UNASSIGNED,  // pembacaan baterai dinonaktifkan sementara
     PIN_UNASSIGNED,  // batteryChargeStatus: not identified
     3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
     PIN_UNASSIGNED,

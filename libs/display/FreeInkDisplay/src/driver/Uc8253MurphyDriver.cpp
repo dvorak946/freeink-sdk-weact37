@@ -1,3 +1,13 @@
+// WeAct 3.7-inch GDEY037T03 / UC8253 adaptation for CrossPoint 1.6.5.
+// Enable ONLY in dv0_esp32s3_weact37: -DFREEINK_WEACT37_DRIVER=1
+// Original Murphy implementation remains available when this flag is absent.
+// WeAct controller sequence adapted from GxEPD2_370_GDEY037T03,
+// by Jean-Marc Zingg (GxEPD2, GNU GPL v3). See LICENSE-GxEPD2.txt.
+// Source: https://github.com/ZinggJM/GxEPD2/blob/master/src/gdey/GxEPD2_370_GDEY037T03.cpp
+// Keeps the existing 416x240 facade -> 240x416 RAM rotation.
+// Normal OTP full cleanup; periodic full refresh disabled (interval = 0).
+// Experimental: host protocol checks are not hardware validation.
+
 #include "Uc8253MurphyDriver.h"
 
 #include <BoardConfig.h>
@@ -34,6 +44,20 @@ constexpr uint8_t CMD_VCOM_DC = 0x82;
 constexpr uint16_t CTRL_W = 240;
 constexpr uint16_t CTRL_H = 416;
 constexpr uint16_t CTRL_WB = CTRL_W / 8;  // 30
+
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+// UC8253 partial-window protocol for the entire physical 240x416 panel.
+void weactFullRamWindow(EpdBus& bus) {
+  bus.cmd(0x90);
+  bus.data(0x00);  // x start
+  bus.data(0xEF);  // x end = 239
+  bus.data(0x00);  // y start high
+  bus.data(0x00);  // y start low
+  bus.data(0x01);  // y end high
+  bus.data(0x9F);  // y end low = 415
+  bus.data(0x01);
+}
+#endif
 }  // namespace
 
 const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
@@ -41,7 +65,7 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
       {MURPHY_LUT_20_DEFAULT, MURPHY_LUT_21_DEFAULT, MURPHY_LUT_22_DEFAULT, MURPHY_LUT_23_DEFAULT, MURPHY_LUT_24_DEFAULT},
       {MURPHY_LUT_20_FAST, MURPHY_LUT_21_FAST, MURPHY_LUT_22_FAST, MURPHY_LUT_23_FAST, MURPHY_LUT_24_FAST},
       {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 56/42/56/42/42
-      8,  // promote FAST -> full every 8 refreshes
+      0,  // Disable periodic full refresh; sleep/startup/app cleanup still applies.
   };
   return cfg;
 }
@@ -71,6 +95,10 @@ void Uc8253MurphyDriver::loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank) {
 // Rotate the landscape framebuffer (416x240) into the controller's portrait RAM
 // (240x416). Controller pixel (cx,cy) maps to framebuffer (srcX=cy, srcY=fbH-1-cx).
 void Uc8253MurphyDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t* fb) {
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  bus.cmd(0x91);  // partial in, used for RAM writes even on a full refresh
+  weactFullRamWindow(bus);
+#endif
   bus.cmd(command);
   bus.beginTxn();
   uint8_t row[CTRL_WB];
@@ -85,6 +113,9 @@ void Uc8253MurphyDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t*
     bus.rawWriteBytes(row, CTRL_WB);
   }
   bus.endTxn();
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  bus.cmd(0x92);  // partial out
+#endif
 }
 
 void Uc8253MurphyDriver::triggerRefresh(EpdBus& bus, bool turnOff) {
@@ -103,6 +134,24 @@ void Uc8253MurphyDriver::triggerRefresh(EpdBus& bus, bool turnOff) {
 }
 
 void Uc8253MurphyDriver::initController(EpdBus& bus) {
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  if (!_weactReady) {
+    // Hardware reset only at startup / after deep sleep.
+    bus.reset(50);
+    _weactReady = true;
+    _weactNeedsFull = true;
+  } else {
+    // Reference driver's soft reset clears forced-temperature settings.
+    bus.cmd(CMD_PANEL_SETTING);
+    bus.data(0x1E);
+    bus.data(0x0D);
+    delay(1);
+  }
+  _isScreenOn = false;
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(0x1F);  // BW OTP waveform, NOT Murphy's host-supplied LUT
+  bus.data(0x0D);
+#else
   bus.cmd(CMD_POWER_SETTING);
   bus.data(0x03);
   bus.data(0x10);
@@ -128,22 +177,93 @@ void Uc8253MurphyDriver::initController(EpdBus& bus) {
   bus.data(0x0F);
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(0x97);
-
+#endif
 }
 
 void Uc8253MurphyDriver::begin(EpdBus& bus) {
-  bus.reset(200);  // Murphy panel wants a long post-reset settle
   _isScreenOn = false;
   _fastRefreshCount = 0;
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  _weactReady = false;
+  _weactNeedsFull = true;
+#ifdef ENABLE_SERIAL_LOG
+  Serial.println("[WEACT37] OTP driver enabled; B/W only");
+#endif
+#else
+  bus.reset(200);  // original Murphy startup settle
+#endif
   initController(bus);
 }
 
 void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  if (fb == nullptr) return;
+  // The board profile continues to expose the established landscape facade.
+  // Never read it with a different stride / shape.
+  if (_fbW != CTRL_H || _fbH != CTRL_W || _fbWb != CTRL_H / 8) {
+#ifdef ENABLE_SERIAL_LOG
+    Serial.println("[WEACT37] ERROR: board framebuffer must be 416x240");
+#endif
+    return;
+  }
+  if (!_weactReady) initController(bus);
+
+  // Old-image RAM is synchronized AFTER every completed refresh. Use that
+  // hardware baseline, which also works for single-buffer callers and the
+  // legacy grayscale-base entry point (its host 'prev' may be stale/null).
+  (void)prev;
+  (void)turnOff;  // GxEPD2's WeAct sequence powers off after both refresh modes.
+  bool useFast = mode == RefreshMode::Fast && !_weactNeedsFull;
+  if (useFast && _cfg.ghostClearInterval != 0 && _fastRefreshCount >= _cfg.ghostClearInterval) {
+    useFast = false;
+  }
+
+#ifdef ENABLE_SERIAL_LOG
+  Serial.println(useFast ? "[WEACT37] FAST refresh" : "[WEACT37] FULL refresh (normal OTP)");
+  const char* requestName = mode == RefreshMode::Fast ? "Fast" :
+                            mode == RefreshMode::Half ? "Half" : "Full";
+  const char* reason = useFast ? "fast" :
+                       _weactNeedsFull ? "initial" :
+                       mode != RefreshMode::Fast ? "requested-non-fast" : "interval";
+  Serial.printf("[WEACT37] decision request=%s count=%u limit=%u needsFull=%u reason=%s\n",
+                requestName, static_cast<unsigned>(_fastRefreshCount),
+                static_cast<unsigned>(_cfg.ghostClearInterval),
+                static_cast<unsigned>(_weactNeedsFull), reason);
+#endif
+  if (!useFast) writePlane(bus, CMD_DTM1, fb);
+  writePlane(bus, CMD_DTM2, fb);
+
+  if (useFast) {
+    bus.cmd(0x91);
+    weactFullRamWindow(bus);
+  }
+  // Keep the proven partial-refresh acceleration for navigation.
+  // Full refresh uses the panel's normal temperature-dependent OTP waveform.
+  // GxEPD2 exposes the same option via useFastFullUpdate = false.
+  // Do not force the 0x5A accelerated full-refresh temperature in this test.
+  if (useFast) {
+    bus.cmd(0xE0);  // CCSET: enable forced temperature for partial updates only.
+    bus.data(0x02);
+    bus.cmd(0xE5);  // TSSET: retain the existing fast partial-refresh setting.
+    bus.data(0x6E);
+  }
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(useFast ? 0xD7 : 0x97);
+  triggerRefresh(bus, true);  // wait for refresh, then power off
+
+  // Match the reference's post-refresh soft reset, then writeImageAgain:
+  // the just-displayed image becomes OLD RAM for the next differential frame.
+  initController(bus);
+  if (useFast) bus.cmd(0x92);
+  writePlane(bus, CMD_DTM1, fb);
+  _weactNeedsFull = false;
+  _fastRefreshCount = useFast ? static_cast<uint16_t>(_fastRefreshCount + 1) : 0;
+#else
   // Manufacturer guidance: hardware-reset and re-initialise the controller before
   // every refresh. The UC8253 retains LUT/RAM state between refreshes, and reusing
   // it leaves pixels half-latched (the previous frame bleeds through / flashes
   // without settling). A fresh reset+init each time clears that residue.
-  bus.reset(200);
+  bus.reset(50);
   _isScreenOn = false;
   initController(bus);
 
@@ -177,7 +297,22 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   }
 
   triggerRefresh(bus, turnOff);
+#endif
 }
+
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff,
+                                    const unsigned char* lut, bool factoryMode) {
+  // This adapter is B/W only. The B/W base has already been displayed.
+  // PanelDriver's default would send the current grayscale MSB scratch image
+  // as an ordinary FAST frame and overwrite that valid text page. Keep the base.
+  (void)bus;
+  (void)fb;
+  (void)turnOff;
+  (void)lut;
+  (void)factoryMode;
+}
+#endif
 
 void Uc8253MurphyDriver::deepSleep(EpdBus& bus) {
   if (_isScreenOn) {
@@ -187,6 +322,11 @@ void Uc8253MurphyDriver::deepSleep(EpdBus& bus) {
   }
   bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0xA5);
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  _weactReady = false;
+  _weactNeedsFull = true;
+  _fastRefreshCount = 0;
+#endif
 }
 
 // Per-board waveform injection mirrors the X3 driver: a board driving a different

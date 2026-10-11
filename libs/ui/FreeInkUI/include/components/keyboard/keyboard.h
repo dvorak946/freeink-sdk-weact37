@@ -647,6 +647,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     bp.inputMask = props.inputMask;
     bp.state = state;
     bp.text = keyText;
+    bp.padding = Insets{2, 1, 2, 1}; // Fit wide letters inside compact keyboard keys.
     if ((key.kind == KeyKind::Shift || key.kind == KeyKind::Mode || key.kind == KeyKind::Ok ||
          key.kind == KeyKind::Space) &&
         !textStyleUnset(props.controlText)) {

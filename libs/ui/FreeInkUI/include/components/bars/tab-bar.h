@@ -46,6 +46,8 @@ struct TabBarProps {
   ActionId action = NO_ACTION;
   uint16_t inputMask = InputDefault | InputPrev | InputNext;
   TextStyle text{};
+  // Opt-in visual centering for single-line labels without icons.
+  bool centerLabelInk = false;
   // selected state drives the pill: set selected.background + radius.
   StyleSet tabStyles{};
   // Inset of each tab pill within its equal-width slot.
@@ -245,6 +247,11 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
         labelRect = Rect{content.x, static_cast<int16_t>((stackY < content.y ? content.y : stackY) + iconSize + 2),
                          content.width, labelH};
       }
+      if (props.centerLabelInk && !hasIcon && hasLabel) {
+        const Rect ink = frame.target().inkBounds(label.font, tab.label, label);
+        labelRect.y = static_cast<int16_t>(content.y + (content.height - ink.height) / 2 - ink.y);
+        labelRect.height = frame.target().lineHeight(label.font);
+      }
       if (metrics.indicatorWidth > 0) {
         const int16_t maxLabelWidth =
             labelRect.width > metrics.indicatorWidth + metrics.indicatorGap
@@ -258,7 +265,9 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
           frame.target().text(Rect{rowX, labelRect.y, labelWidth, labelRect.height}, tab.label, label);
         }
         const int16_t indicatorX = static_cast<int16_t>(rowX + labelWidth + metrics.indicatorGap);
-        const int16_t middleY = static_cast<int16_t>(labelRect.y + labelRect.height / 2);
+        const int16_t middleY = props.centerLabelInk && !hasIcon
+                                    ? static_cast<int16_t>(content.y + content.height / 2)
+                                    : static_cast<int16_t>(labelRect.y + labelRect.height / 2);
         const int16_t half = static_cast<int16_t>(metrics.indicatorWidth / 2);
         if (tab.indicator == TabIndicator::Up) {
           frame.target().triangle(

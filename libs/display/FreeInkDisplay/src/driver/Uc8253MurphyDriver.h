@@ -1,5 +1,15 @@
+// WeAct 3.7-inch GDEY037T03 / UC8253 adaptation for CrossPoint 1.6.5.
+// Enable ONLY in dv0_esp32s3_weact37: -DFREEINK_WEACT37_DRIVER=1
+// Original Murphy implementation remains available when this flag is absent.
+// WeAct controller sequence adapted from GxEPD2_370_GDEY037T03,
+// by Jean-Marc Zingg (GxEPD2, GNU GPL v3). See LICENSE-GxEPD2.txt.
+// Source: https://github.com/ZinggJM/GxEPD2/blob/master/src/gdey/GxEPD2_370_GDEY037T03.cpp
+// Keeps the existing 416x240 facade -> 240x416 RAM rotation.
+// Experimental: host protocol checks are not hardware validation.
+
 #pragma once
 
+// The Murphy notes below describe the fallback when the WeAct flag is absent.
 // UC8253 panel driver — Murphy M3 (CrowPanel 3.7", 240x416 B/W, ESP32-S3).
 // Ported from the community-sdk feat-support-for-m3 implementation.
 //
@@ -48,7 +58,7 @@ struct Uc8253MurphyConfig {
   Uc8253MurphyLutBank def;     // GC (ghost-clearing) waveforms
   Uc8253MurphyLutBank fast;    // DU (quick) waveforms
   Uc8253MurphyLutLens lens;    // per-register LUT byte counts
-  uint8_t ghostClearInterval;  // promote FAST -> full every N refreshes
+  uint16_t ghostClearInterval;  // Full cleanup after N fast refreshes; supports intervals above 255.
 };
 
 const Uc8253MurphyConfig& uc8253MurphyDefaultConfig();
@@ -65,6 +75,11 @@ class Uc8253MurphyDriver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  // Protect the B/W base from unsupported legacy grayscale overlay calls.
+  void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+#endif
+
  private:
   void initController(EpdBus& bus);
   void loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank);
@@ -78,7 +93,11 @@ class Uc8253MurphyDriver : public PanelDriver {
   uint16_t _fbWb;  // framebuffer width bytes (52)
 
   bool _isScreenOn = false;
-  uint8_t _fastRefreshCount = 0;
+  uint16_t _fastRefreshCount = 0;
+#if defined(FREEINK_WEACT37_DRIVER) && FREEINK_WEACT37_DRIVER
+  bool _weactReady = false;
+  bool _weactNeedsFull = true;
+#endif
 };
 
 PanelDriver& uc8253MurphyDriver();
